@@ -24,6 +24,7 @@ class Program
     private static float sparklerThickness = 8f;
     private static bool showImGui = true;
     private static bool autoSpawn = false;
+    private static bool infiniteTrails = false;
     private static float autoSpawnTimer = 0f;
     private static bool isMouseOverImGui = false;
     private static Vector2? lastMousePos = null;
@@ -44,6 +45,11 @@ class Program
         Raylib.MaximizeWindow();
         
         rlImGui.Setup(true);
+        
+        // Configure ImGui for high DPI displays
+        ImGuiIOPtr io = ImGui.GetIO();
+        float dpiScale = Math.Max(1.0f, Raylib.GetWindowScaleDPI().X);
+        io.FontGlobalScale = dpiScale;
         
         while (!Raylib.WindowShouldClose())
         {
@@ -108,7 +114,10 @@ class Program
             // Update all points in the segment
             foreach (var point in segment.Points)
             {
-                point.Update(deltaTime);
+                if (!infiniteTrails)
+                {
+                    point.Update(deltaTime);
+                }
             }
             
             // Remove dead segments
@@ -340,6 +349,7 @@ class Program
         
         ImGui.Separator();
         ImGui.Checkbox("Auto Spawn", ref autoSpawn);
+        ImGui.Checkbox("Infinite Trails", ref infiniteTrails);
         
         if (ImGui.Button("Clear All"))
         {
