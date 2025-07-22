@@ -7,8 +7,19 @@ namespace ParticleRay;
 
 class Program
 {
+    private static PresetType currentPreset = PresetType.Custom;
+    private static ParticlePreset activePreset = new ParticlePreset("Custom");
+    private static ThemeType currentTheme = ThemeType.Rainbow;
+    private static ColorTheme activeTheme = ColorTheme.CreateRainbow();
+    private static bool useColorTheme = false;
+    private static float colorTransitionSpeed = 1f;
+    private static ShapeType currentShape = ShapeType.Circle;
+    private static bool randomizeShapes = false;
     private static List<Particle> particles = new();
     private static List<TrailSegment> sparklerSegments = new();
+    private static Queue<Particle> particlePool = new();
+    private static int maxParticles = 50000;
+    private static float currentColorTime = 0f;
     private static TrailSegment? currentSegment = null;
     private static float hoverSpawnRate = 10f;
     private static float clickSpawnRate = 100f;
@@ -65,6 +76,7 @@ class Program
     
     static void Update(float deltaTime)
     {
+        currentColorTime += deltaTime * colorTransitionSpeed;
         Vector2 mousePos = Raylib.GetMousePosition();
         bool isMousePressed = Raylib.IsMouseButtonDown(MouseButton.Left);
         bool isTouchActive = Raylib.GetTouchPointCount() > 0;
@@ -98,6 +110,13 @@ class Program
             
             currentSegment.Points.Add(new TrailPoint(currentPos, sparklerTrailLife));
             lastMousePos = currentPos;
+            
+            // Refresh ALL points in the current segment to create pulse effect
+            foreach (var point in currentSegment.Points)
+            {
+                // Keep all points in the active segment at full life
+                point.Life = sparklerTrailLife;
+            }
         }
         else
         {
@@ -120,10 +139,52 @@ class Program
                 }
             }
             
+            // Remove dead points from the beginning to create undraw effect
+            if (!infiniteTrails)
+            {
+                while (segment.Points.Count > 0 && !segment.Points[0].IsAlive)
+                {
+                    segment.Points.RemoveAt(0);
+                }
+            }
+            
             // Remove dead segments
             if (!segment.IsAlive)
             {
                 sparklerSegments.RemoveAt(i);
+            }
+            
+            // Generate sparkle particles from active segments
+            if (segment.IsAlive && particles.Count < maxParticles && segment.Points.Count > 1)
+            {
+                // Start from a random offset to avoid always sampling the same points
+                int startOffset = Random.Shared.Next(3);
+                for (int j = startOffset; j < segment.Points.Count; j += 3) // Sample every 3rd point
+                {
+                    if (Random.Shared.NextDouble() < 0.2) // Increased chance
+                    {
+                        var point = segment.Points[j];
+                        if (point.LifeRatio > 0.1f)
+                        {
+                            var sparkle = new Particle(point.Position + new Vector2(
+                                (float)(Random.Shared.NextDouble() - 0.5) * 20,
+                                (float)(Random.Shared.NextDouble() - 0.5) * 20))
+                            {
+                                Velocity = new Vector2(
+                                    (float)(Random.Shared.NextDouble() - 0.5) * 50,
+                                    (float)(Random.Shared.NextDouble() - 0.5) * 50 - 20),
+                                Size = (float)(Random.Shared.NextDouble() * 2 + 1),
+                                Color = GetParticleColor(),
+                                Shape = GetParticleShape()
+                            };
+                            sparkle.SetLife(0.5f);
+                            if (particles.Count < maxParticles)
+                            {
+                                particles.Add(sparkle);
+                            }
+                        }
+                    }
+                }
             }
         }
         
@@ -157,11 +218,16 @@ class Program
                     );
                     var particle = new Particle(spawnPos + jitter)
                     {
-                        Velocity = GenerateVelocity(),
-                        Size = (float)(Random.Shared.NextDouble() * (maxSize - minSize) + minSize)
+                        Velocity = activePreset.CustomVelocityGenerator?.Invoke() ?? GenerateVelocity(),
+                        Size = (float)(Random.Shared.NextDouble() * (maxSize - minSize) + minSize),
+                        Color = GetParticleColor(),
+                        Shape = GetParticleShape()
                     };
                     particle.SetLife((float)(Random.Shared.NextDouble() * (maxLife - minLife) + minLife));
-                    particles.Add(particle);
+                    if (particles.Count < maxParticles)
+                    {
+                        particles.Add(particle);
+                    }
                 }
             }
         }
@@ -177,11 +243,16 @@ class Program
                 {
                     var particle = new Particle(screenCenter)
                     {
-                        Velocity = GenerateVelocity(),
-                        Size = (float)(Random.Shared.NextDouble() * (maxSize - minSize) + minSize)
+                        Velocity = activePreset.CustomVelocityGenerator?.Invoke() ?? GenerateVelocity(),
+                        Size = (float)(Random.Shared.NextDouble() * (maxSize - minSize) + minSize),
+                        Color = GetParticleColor(),
+                        Shape = GetParticleShape()
                     };
                     particle.SetLife((float)(Random.Shared.NextDouble() * (maxLife - minLife) + minLife));
-                    particles.Add(particle);
+                    if (particles.Count < maxParticles)
+                    {
+                        particles.Add(particle);
+                    }
                 }
             }
         }
@@ -239,11 +310,11 @@ class Program
                     float opacity1 = point1.LifeRatio;
                     float opacity2 = point2.LifeRatio;
                 
-                    // Main trail line with glow effect
-                    for (int glow = 3; glow >= 0; glow--)
+                    // Reduced glow layers for performance
+                    for (int glow = 2; glow >= 0; glow--)
                     {
-                        float glowSize = sparklerThickness + glow * 3;
-                        byte glowAlpha = (byte)(20 * opacity2 / (glow + 1));
+                        float glowSize = sparklerThickness + glow * 4;
+                        byte glowAlpha = (byte)(30 * opacity2 / (glow + 1));
                         
                         // Golden sparkler color
                         Color glowColor = new Color((byte)255, (byte)200, (byte)100, glowAlpha);
@@ -256,33 +327,14 @@ class Program
                     Color coreColor = new Color((byte)255, (byte)240, (byte)200, (byte)(255 * opacity2));
                     DrawThickLine(point1.Position, point2.Position, sparklerThickness * 0.5f, coreColor, opacity1, opacity2);
                     
-                    // Add sparkle particles along the trail
-                    if (Random.Shared.NextDouble() < 0.3)
-                    {
-                        Vector2 sparklePos = Vector2.Lerp(point1.Position, point2.Position, (float)Random.Shared.NextDouble());
-                        var jitter = new Vector2(
-                            (float)(Random.Shared.NextDouble() - 0.5) * 20,
-                            (float)(Random.Shared.NextDouble() - 0.5) * 20
-                        );
-                        var sparkle = new Particle(sparklePos + jitter)
-                        {
-                            Velocity = new Vector2(
-                                (float)(Random.Shared.NextDouble() - 0.5) * 50,
-                                (float)(Random.Shared.NextDouble() - 0.5) * 50 - 20
-                            ),
-                            Size = (float)(Random.Shared.NextDouble() * 2 + 1),
-                            Color = new Color((byte)255, (byte)230, (byte)150, (byte)255)
-                        };
-                        sparkle.SetLife(0.5f);
-                        particles.Add(sparkle);
-                    }
+                    // Move sparkle particle creation to Update method
                 }
             }
         }
         
         foreach (var particle in particles)
         {
-            Raylib.DrawCircleV(particle.Position, particle.Size, particle.Color);
+            ParticleShapes.DrawParticle(particle.Position, particle.Size, particle.Color, particle.Shape);
         }
         
         Raylib.DrawText($"Particles: {particles.Count}", 10, 10, 20, Color.White);
@@ -315,6 +367,21 @@ class Program
     {
         ImGui.Begin("Particle Settings");
         
+        ImGui.Text("Presets");
+        if (ImGui.BeginCombo("##Preset", currentPreset.ToString()))
+        {
+            foreach (PresetType preset in Enum.GetValues<PresetType>())
+            {
+                if (ImGui.Selectable(preset.ToString(), currentPreset == preset))
+                {
+                    currentPreset = preset;
+                    ApplyPreset(preset);
+                }
+            }
+            ImGui.EndCombo();
+        }
+        ImGui.Separator();
+        
         ImGui.Text($"Active Particles: {particles.Count}");
         ImGui.Separator();
         
@@ -343,6 +410,10 @@ class Program
         ImGui.SliderFloat("Max Life", ref maxLife, minLife, 5f);
         
         ImGui.Separator();
+        ImGui.Text("Performance");
+        ImGui.SliderInt("Max Particles", ref maxParticles, 5000, 200000);
+        
+        ImGui.Separator();
         ImGui.Text("Sparkler Trail");
         ImGui.SliderFloat("Trail Life", ref sparklerTrailLife, 0.5f, 5f);
         ImGui.SliderFloat("Trail Thickness", ref sparklerThickness, 2f, 20f);
@@ -350,6 +421,48 @@ class Program
         ImGui.Separator();
         ImGui.Checkbox("Auto Spawn", ref autoSpawn);
         ImGui.Checkbox("Infinite Trails", ref infiniteTrails);
+        
+        ImGui.Separator();
+        ImGui.Text("Color Theme");
+        ImGui.Checkbox("Use Color Theme", ref useColorTheme);
+        
+        if (useColorTheme)
+        {
+            if (ImGui.BeginCombo("##Theme", currentTheme.ToString()))
+            {
+                foreach (ThemeType theme in Enum.GetValues<ThemeType>())
+                {
+                    if (theme == ThemeType.Custom) continue;
+                    if (ImGui.Selectable(theme.ToString(), currentTheme == theme))
+                    {
+                        currentTheme = theme;
+                        ApplyTheme(theme);
+                    }
+                }
+                ImGui.EndCombo();
+            }
+            
+            ImGui.SliderFloat("Transition Speed", ref colorTransitionSpeed, 0.1f, 5f);
+        }
+        
+        ImGui.Separator();
+        ImGui.Text("Particle Shapes");
+        ImGui.Checkbox("Randomize Shapes", ref randomizeShapes);
+        
+        if (!randomizeShapes)
+        {
+            if (ImGui.BeginCombo("##Shape", currentShape.ToString()))
+            {
+                foreach (ShapeType shape in Enum.GetValues<ShapeType>())
+                {
+                    if (ImGui.Selectable(shape.ToString(), currentShape == shape))
+                    {
+                        currentShape = shape;
+                    }
+                }
+                ImGui.EndCombo();
+            }
+        }
         
         if (ImGui.Button("Clear All"))
         {
@@ -366,6 +479,80 @@ class Program
         float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
         float speed = (float)(Random.Shared.NextDouble() * (maxSpeed - minSpeed) + minSpeed);
         return new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle)) * speed;
+    }
+    
+    static void ApplyPreset(PresetType preset)
+    {
+        activePreset = preset switch
+        {
+            PresetType.Fireworks => ParticlePreset.CreateFireworks(),
+            PresetType.Fountain => ParticlePreset.CreateFountain(),
+            PresetType.Snow => ParticlePreset.CreateSnow(),
+            PresetType.Rain => ParticlePreset.CreateRain(),
+            PresetType.Galaxy => ParticlePreset.CreateGalaxy(),
+            _ => new ParticlePreset("Custom")
+        };
+        
+        if (preset != PresetType.Custom)
+        {
+            hoverSpawnRate = activePreset.HoverSpawnRate;
+            clickSpawnRate = activePreset.ClickSpawnRate;
+            particleGravity = activePreset.Gravity;
+            particleDrag = activePreset.Drag;
+            minSpeed = activePreset.MinSpeed;
+            maxSpeed = activePreset.MaxSpeed;
+            minSize = activePreset.MinSize;
+            maxSize = activePreset.MaxSize;
+            minLife = activePreset.MinLife;
+            maxLife = activePreset.MaxLife;
+        }
+    }
+    
+    static void ApplyTheme(ThemeType theme)
+    {
+        activeTheme = theme switch
+        {
+            ThemeType.Rainbow => ColorTheme.CreateRainbow(),
+            ThemeType.Fire => ColorTheme.CreateFire(),
+            ThemeType.Ocean => ColorTheme.CreateOcean(),
+            ThemeType.Forest => ColorTheme.CreateForest(),
+            ThemeType.Sunset => ColorTheme.CreateSunset(),
+            ThemeType.Aurora => ColorTheme.CreateAurora(),
+            ThemeType.Monochrome => ColorTheme.CreateMonochrome(),
+            _ => ColorTheme.CreateRainbow()
+        };
+    }
+    
+    static Color GetParticleColor()
+    {
+        if (useColorTheme)
+        {
+            float t = currentColorTime % 1f;
+            return activeTheme.GetColor(t);
+        }
+        else if (activePreset.UseColorTheme)
+        {
+            return activePreset.GetRandomColor();
+        }
+        else
+        {
+            return new Color(
+                (byte)Random.Shared.Next(100, 256),
+                (byte)Random.Shared.Next(100, 256),
+                (byte)Random.Shared.Next(100, 256),
+                (byte)255
+            );
+        }
+    }
+    
+    static ShapeType GetParticleShape()
+    {
+        if (randomizeShapes)
+        {
+            var shapes = Enum.GetValues<ShapeType>();
+            return shapes[Random.Shared.Next(shapes.Length)];
+        }
+        return currentShape;
     }
     
     static void DrawThickLine(Vector2 start, Vector2 end, float thickness, Color color, float startOpacity, float endOpacity)

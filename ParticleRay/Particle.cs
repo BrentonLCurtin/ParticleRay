@@ -11,6 +11,7 @@ public class Particle
     public float Size { get; set; }
     public float Life { get; set; }
     public float MaxLife { get; private set; }
+    public ShapeType Shape { get; set; }
     
     private static readonly Random Random = new();
     
@@ -28,6 +29,7 @@ public class Particle
         Velocity = new Vector2();
         Size = 4f;
         MaxLife = Life = 2f;
+        Shape = ShapeType.Circle;
     }
     
     public void Update(float deltaTime)
