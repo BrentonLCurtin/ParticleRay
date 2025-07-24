@@ -179,6 +179,23 @@ public class AnimationSystem
         CurrentFrame.ParticleSnapshots.Clear();
     }
     
+    public Frame? GetFrame(int index)
+    {
+        if (index < 0 || index >= frames.Count) return null;
+        return frames[index];
+    }
+    
+    public void InsertFrame(int index, Frame frame)
+    {
+        frames.Insert(Math.Clamp(index, 0, frames.Count), frame);
+        
+        // Update frame numbers
+        for (int i = 0; i < frames.Count; i++)
+        {
+            frames[i].FrameNumber = i;
+        }
+    }
+    
     public void SaveCurrentState(List<TrailSegment> trails, List<Particle> particles)
     {
         if (CurrentFrame == null) return;

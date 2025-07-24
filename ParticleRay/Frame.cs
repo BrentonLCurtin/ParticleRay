@@ -9,9 +9,15 @@ public class Frame
     public List<ParticleSnapshot> ParticleSnapshots { get; set; } = new();
     public int FrameNumber { get; set; }
     
-    public Frame(int frameNumber)
+    public Frame(int frameNumber = 0)
     {
         FrameNumber = frameNumber;
+    }
+    
+    public void Clear()
+    {
+        TrailSegments.Clear();
+        ParticleSnapshots.Clear();
     }
     
     public Frame Clone()

@@ -44,6 +44,7 @@ class Program
     private static bool showOnionSkin = false;
     private static float onionSkinOpacity = 0.3f;
     private static bool autoSaveFrame = true;
+    private static UndoRedoSystem undoRedoSystem = new();
     
     static void Main()
     {
@@ -97,9 +98,14 @@ class Program
         
         if (Raylib.IsKeyPressed(KeyboardKey.C))
         {
-            particles.Clear();
-            sparklerSegments.Clear();
-            currentSegment = null;
+            if (animationSystem.CurrentFrame != null)
+            {
+                var action = new ClearFrameAction(animationSystem.CurrentFrame, animationSystem.CurrentFrameIndex);
+                undoRedoSystem.ExecuteAction(action);
+                particles.Clear();
+                sparklerSegments.Clear();
+                currentSegment = null;
+            }
         }
         
         // Frame navigation hotkeys
@@ -116,14 +122,63 @@ class Program
             LoadCurrentFrame();
         }
         
+        // A/D navigation (only when Ctrl is not held)
+        if (!Raylib.IsKeyDown(KeyboardKey.LeftControl) && !Raylib.IsKeyDown(KeyboardKey.RightControl))
+        {
+            if (Raylib.IsKeyPressed(KeyboardKey.A))
+            {
+                SaveCurrentFrame(); // Save before switching
+                animationSystem.PreviousFrame();
+                LoadCurrentFrame();
+            }
+            if (Raylib.IsKeyPressed(KeyboardKey.D))
+            {
+                SaveCurrentFrame(); // Save before switching
+                animationSystem.NextFrame();
+                LoadCurrentFrame();
+            }
+        }
+        
         // Ctrl+A for new frame
         if (Raylib.IsKeyDown(KeyboardKey.LeftControl) && Raylib.IsKeyPressed(KeyboardKey.A))
         {
             SaveCurrentFrame();
-            animationSystem.AddNewFrame();
-            animationSystem.GoToFrame(animationSystem.FrameCount - 1);
-            ClearCanvas();
+            var action = new AddFrameAction(
+                animationSystem,
+                animationSystem.FrameCount,
+                (index) => { animationSystem.GoToFrame(index); ClearCanvas(); },
+                () => LoadCurrentFrame()
+            );
+            undoRedoSystem.ExecuteAction(action);
         }
+        
+        // Ctrl+X for delete frame
+        if (Raylib.IsKeyDown(KeyboardKey.LeftControl) && Raylib.IsKeyPressed(KeyboardKey.X))
+        {
+            if (animationSystem.FrameCount > 1) // Don't delete if only one frame
+            {
+                var action = new DeleteFrameAction(
+                    animationSystem, 
+                    animationSystem.CurrentFrameIndex,
+                    () => LoadCurrentFrame(),
+                    (index) => { animationSystem.GoToFrame(index); LoadCurrentFrame(); }
+                );
+                undoRedoSystem.ExecuteAction(action);
+            }
+        }
+        
+        // Ctrl+Z for undo
+        if (Raylib.IsKeyDown(KeyboardKey.LeftControl) && Raylib.IsKeyPressed(KeyboardKey.Z))
+        {
+            undoRedoSystem.Undo();
+        }
+        
+        // Ctrl+Y for redo
+        if (Raylib.IsKeyDown(KeyboardKey.LeftControl) && Raylib.IsKeyPressed(KeyboardKey.Y))
+        {
+            undoRedoSystem.Redo();
+        }
+        
         if (Raylib.IsKeyPressed(KeyboardKey.Space))
         {
             if (animationSystem.IsPlaying)
@@ -580,8 +635,13 @@ class Program
         
         if (ImGui.Button("-##delete", new Vector2(buttonWidth, buttonHeight)) && animationSystem.FrameCount > 1)
         {
-            animationSystem.DeleteFrame(animationSystem.CurrentFrameIndex);
-            LoadCurrentFrame();
+            var action = new DeleteFrameAction(
+                animationSystem, 
+                animationSystem.CurrentFrameIndex,
+                () => LoadCurrentFrame(),
+                (index) => { animationSystem.GoToFrame(index); LoadCurrentFrame(); }
+            );
+            undoRedoSystem.ExecuteAction(action);
         }
         if (ImGui.IsItemHovered())
         {
@@ -595,10 +655,17 @@ class Program
         // Clear button
         if (ImGui.Button("Clear##clear", new Vector2(buttonWidth * 1.5f, buttonHeight)))
         {
-            ClearCanvas();
-            if (autoSaveFrame)
+            if (animationSystem.CurrentFrame != null)
             {
-                animationSystem.SaveCurrentState(sparklerSegments, particles);
+                var action = new ClearFrameAction(animationSystem.CurrentFrame, animationSystem.CurrentFrameIndex);
+                undoRedoSystem.ExecuteAction(action);
+                particles.Clear();
+                sparklerSegments.Clear();
+                currentSegment = null;
+                if (autoSaveFrame)
+                {
+                    animationSystem.SaveCurrentState(sparklerSegments, particles);
+                }
             }
         }
         if (ImGui.IsItemHovered())
@@ -665,6 +732,21 @@ class Program
             {
                 ImGui.SetTooltip("Onion skin opacity");
             }
+        }
+        
+        ImGui.SameLine();
+        ImGui.Dummy(new Vector2(spacing, 0));
+        ImGui.SameLine();
+        
+        // UI toggle button
+        string uiButtonText = showImGui ? "Hide UI" : "Show UI";
+        if (ImGui.Button(uiButtonText + "##toggleui", new Vector2(80f, buttonHeight)))
+        {
+            showImGui = !showImGui;
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Toggle settings windows (H)");
         }
         
         ImGui.End();
