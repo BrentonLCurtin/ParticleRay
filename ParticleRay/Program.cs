@@ -19,6 +19,8 @@ class Program
     private static List<TrailSegment> sparklerSegments = new();
     private static Queue<Particle> particlePool = new();
     private static int maxParticles = 50000;
+    private static AnimationSystem animationSystem = new();
+    private static int lastLoadedFrame = -1;
     private static float currentColorTime = 0f;
     private static TrailSegment? currentSegment = null;
     private static float hoverSpawnRate = 10f;
@@ -39,6 +41,9 @@ class Program
     private static float autoSpawnTimer = 0f;
     private static bool isMouseOverImGui = false;
     private static Vector2? lastMousePos = null;
+    private static bool showOnionSkin = false;
+    private static float onionSkinOpacity = 0.3f;
+    private static bool autoSaveFrame = true;
     
     static void Main()
     {
@@ -80,6 +85,124 @@ class Program
         Vector2 mousePos = Raylib.GetMousePosition();
         bool isMousePressed = Raylib.IsMouseButtonDown(MouseButton.Left);
         bool isTouchActive = Raylib.GetTouchPointCount() > 0;
+        
+        // Update animation system
+        animationSystem.Update(deltaTime);
+        
+        // Handle key inputs first (before checking if playing)
+        if (Raylib.IsKeyPressed(KeyboardKey.H))
+        {
+            showImGui = !showImGui;
+        }
+        
+        if (Raylib.IsKeyPressed(KeyboardKey.C))
+        {
+            particles.Clear();
+            sparklerSegments.Clear();
+            currentSegment = null;
+        }
+        
+        // Frame navigation hotkeys
+        if (Raylib.IsKeyPressed(KeyboardKey.Left))
+        {
+            SaveCurrentFrame(); // Save before switching
+            animationSystem.PreviousFrame();
+            LoadCurrentFrame();
+        }
+        if (Raylib.IsKeyPressed(KeyboardKey.Right))
+        {
+            SaveCurrentFrame(); // Save before switching
+            animationSystem.NextFrame();
+            LoadCurrentFrame();
+        }
+        
+        // Ctrl+A for new frame
+        if (Raylib.IsKeyDown(KeyboardKey.LeftControl) && Raylib.IsKeyPressed(KeyboardKey.A))
+        {
+            SaveCurrentFrame();
+            animationSystem.AddNewFrame();
+            animationSystem.GoToFrame(animationSystem.FrameCount - 1);
+            ClearCanvas();
+        }
+        if (Raylib.IsKeyPressed(KeyboardKey.Space))
+        {
+            if (animationSystem.IsPlaying)
+            {
+                animationSystem.Pause();
+                lastLoadedFrame = -1; // Reset so we can edit the current frame
+            }
+            else
+            {
+                animationSystem.Play();
+            }
+        }
+        
+        if (Raylib.IsKeyPressed(KeyboardKey.Escape))
+        {
+            Raylib.CloseWindow();
+        }
+        
+        // Handle frame switching when playing
+        if (animationSystem.IsPlaying && animationSystem.CurrentFrame != null)
+        {
+            // Only load frame data when we switch to a new frame
+            if (lastLoadedFrame != animationSystem.CurrentFrameIndex)
+            {
+                var (loadedTrails, loadedParticles) = animationSystem.LoadFrameData(animationSystem.CurrentFrame);
+                sparklerSegments = loadedTrails;
+                particles = loadedParticles;
+                lastLoadedFrame = animationSystem.CurrentFrameIndex;
+            }
+            
+            // Update particle physics during playback
+            for (int i = particles.Count - 1; i >= 0; i--)
+            {
+                var particle = particles[i];
+                particle.Update(deltaTime);
+                
+                var vel = particle.Velocity;
+                vel *= particleDrag;
+                vel.Y += particleGravity * deltaTime;
+                particle.Velocity = vel;
+                
+                if (!particle.IsAlive)
+                {
+                    particles.RemoveAt(i);
+                }
+            }
+            
+            // Update trail segments during playback
+            for (int i = sparklerSegments.Count - 1; i >= 0; i--)
+            {
+                var segment = sparklerSegments[i];
+                
+                // Update all points in the segment
+                foreach (var point in segment.Points)
+                {
+                    if (!infiniteTrails)
+                    {
+                        point.Update(deltaTime);
+                    }
+                }
+                
+                // Remove dead points from the beginning
+                if (!infiniteTrails)
+                {
+                    while (segment.Points.Count > 0 && !segment.Points[0].IsAlive)
+                    {
+                        segment.Points.RemoveAt(0);
+                    }
+                }
+                
+                // Remove dead segments
+                if (!segment.IsAlive)
+                {
+                    sparklerSegments.RemoveAt(i);
+                }
+            }
+            
+            return; // Skip drawing input when playing
+        }
         
         // Track sparkler trail when clicking/touching
         if ((isMousePressed || isTouchActive) && !isMouseOverImGui)
@@ -273,21 +396,10 @@ class Program
             }
         }
         
-        if (Raylib.IsKeyPressed(KeyboardKey.H))
+        // Auto-save frame when drawing
+        if (autoSaveFrame && !animationSystem.IsPlaying)
         {
-            showImGui = !showImGui;
-        }
-        
-        if (Raylib.IsKeyPressed(KeyboardKey.C))
-        {
-            particles.Clear();
-            sparklerSegments.Clear();
-            currentSegment = null;
-        }
-        
-        if (Raylib.IsKeyPressed(KeyboardKey.Escape))
-        {
-            Raylib.CloseWindow();
+            animationSystem.SaveCurrentState(sparklerSegments, particles);
         }
     }
     
@@ -295,6 +407,12 @@ class Program
     {
         Raylib.BeginDrawing();
         Raylib.ClearBackground(Color.Black);
+        
+        // Draw onion skin (previous/next frames)
+        if (showOnionSkin && !animationSystem.IsPlaying)
+        {
+            DrawOnionSkin();
+        }
         
         // Draw sparkler trail segments
         foreach (var segment in sparklerSegments)
@@ -337,34 +455,331 @@ class Program
             ParticleShapes.DrawParticle(particle.Position, particle.Size, particle.Color, particle.Shape);
         }
         
-        Raylib.DrawText($"Particles: {particles.Count}", 10, 10, 20, Color.White);
-        Raylib.DrawText("Hover: Light spawn | Click/Touch: Heavy spawn | H: Toggle UI | C: Clear | ESC: Exit", 10, 35, 16, Color.Gray);
+        Raylib.DrawText($"Particles: {particles.Count} | Frame: {animationSystem.CurrentFrameIndex + 1}/{animationSystem.FrameCount}", 10, 10, 20, Color.White);
+        Raylib.DrawText("Hover: Light spawn | Click/Touch: Heavy spawn | H: Toggle UI | C: Clear | Left/Right: Navigate | Ctrl+A: New Frame | Space: Play/Pause | ESC: Exit", 10, 35, 16, Color.Gray);
+        
+        // Draw playback indicator
+        if (animationSystem.IsPlaying)
+        {
+            Raylib.DrawText("▶ PLAYING", 10, 60, 20, Color.Green);
+        }
         
         // Draw custom cursor
         Vector2 mousePos = Raylib.GetMousePosition();
         Raylib.DrawCircleV(mousePos, 5, Color.White);
         Raylib.DrawCircleV(mousePos, 3, Color.Black);
         
+        // Always draw the bottom toolbar
+        rlImGui.Begin();
+        
+        DrawBottomToolbar();
+        
         if (showImGui)
         {
-            rlImGui.Begin();
-            
-            // Check if mouse is over ImGui before drawing UI
-            isMouseOverImGui = ImGui.IsWindowHovered(ImGuiHoveredFlags.AnyWindow);
-            
             DrawImGui();
-            rlImGui.End();
         }
-        else
-        {
-            isMouseOverImGui = false;
-        }
+        
+        // Check if mouse is over ImGui after drawing UI
+        isMouseOverImGui = ImGui.GetIO().WantCaptureMouse;
+        
+        rlImGui.End();
         
         Raylib.EndDrawing();
     }
     
+    static void DrawBottomToolbar()
+    {
+        // Create a fixed toolbar at the bottom
+        float toolbarHeight = 60f;
+        float windowWidth = Raylib.GetScreenWidth();
+        float windowHeight = Raylib.GetScreenHeight();
+        
+        ImGui.SetNextWindowPos(new Vector2(0, windowHeight - toolbarHeight));
+        ImGui.SetNextWindowSize(new Vector2(windowWidth, toolbarHeight));
+        
+        ImGuiWindowFlags flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | 
+                                ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoScrollbar | 
+                                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
+        
+        ImGui.Begin("Toolbar", flags);
+        
+        // Center the controls
+        float buttonWidth = 50f;
+        float buttonHeight = 40f;
+        float spacing = 10f;
+        
+        // Frame info
+        ImGui.Text($"Frame {animationSystem.CurrentFrameIndex + 1}/{animationSystem.FrameCount}");
+        ImGui.SameLine();
+        
+        // Navigation buttons
+        if (ImGui.Button("<<##first", new Vector2(buttonWidth, buttonHeight))) 
+        { 
+            SaveCurrentFrame(); 
+            animationSystem.GoToFrame(0);
+            LoadCurrentFrame(); 
+        }
+        ImGui.SameLine();
+        
+        if (ImGui.Button("<##prev", new Vector2(buttonWidth, buttonHeight))) 
+        { 
+            SaveCurrentFrame(); 
+            animationSystem.PreviousFrame(); 
+            LoadCurrentFrame(); 
+        }
+        ImGui.SameLine();
+        
+        // Play/Pause button
+        string playPauseText = animationSystem.IsPlaying ? "||" : ">";
+        if (ImGui.Button(playPauseText + "##playpause", new Vector2(buttonWidth, buttonHeight)))
+        {
+            if (animationSystem.IsPlaying)
+            {
+                animationSystem.Pause();
+                lastLoadedFrame = -1;
+            }
+            else
+            {
+                animationSystem.Play();
+            }
+        }
+        ImGui.SameLine();
+        
+        if (ImGui.Button(">##next", new Vector2(buttonWidth, buttonHeight))) 
+        { 
+            SaveCurrentFrame(); 
+            animationSystem.NextFrame(); 
+            LoadCurrentFrame(); 
+        }
+        ImGui.SameLine();
+        
+        if (ImGui.Button(">>##last", new Vector2(buttonWidth, buttonHeight))) 
+        { 
+            SaveCurrentFrame(); 
+            animationSystem.GoToFrame(animationSystem.FrameCount - 1);
+            LoadCurrentFrame(); 
+        }
+        ImGui.SameLine();
+        
+        ImGui.Dummy(new Vector2(spacing, 0));
+        ImGui.SameLine();
+        
+        // Frame operations
+        if (ImGui.Button("+##add", new Vector2(buttonWidth, buttonHeight)))
+        {
+            SaveCurrentFrame();
+            animationSystem.AddNewFrame();
+            animationSystem.GoToFrame(animationSystem.FrameCount - 1);
+            ClearCanvas();
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Add new frame (Ctrl+A)");
+        }
+        ImGui.SameLine();
+        
+        if (ImGui.Button("-##delete", new Vector2(buttonWidth, buttonHeight)) && animationSystem.FrameCount > 1)
+        {
+            animationSystem.DeleteFrame(animationSystem.CurrentFrameIndex);
+            LoadCurrentFrame();
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Delete current frame");
+        }
+        ImGui.SameLine();
+        
+        ImGui.Dummy(new Vector2(spacing, 0));
+        ImGui.SameLine();
+        
+        // Clear button
+        if (ImGui.Button("Clear##clear", new Vector2(buttonWidth * 1.5f, buttonHeight)))
+        {
+            ClearCanvas();
+            if (autoSaveFrame)
+            {
+                animationSystem.SaveCurrentState(sparklerSegments, particles);
+            }
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Clear current frame (C)");
+        }
+        ImGui.SameLine();
+        
+        // Timeline slider
+        ImGui.Dummy(new Vector2(spacing, 0));
+        ImGui.SameLine();
+        ImGui.Text("Timeline:");
+        ImGui.SameLine();
+        
+        int currentFrame = animationSystem.CurrentFrameIndex;
+        ImGui.SetNextItemWidth(200f);
+        if (ImGui.SliderInt("##Timeline", ref currentFrame, 0, animationSystem.FrameCount - 1))
+        {
+            SaveCurrentFrame();
+            animationSystem.GoToFrame(currentFrame);
+            LoadCurrentFrame();
+        }
+        ImGui.SameLine();
+        
+        // FPS controls
+        ImGui.Dummy(new Vector2(spacing, 0));
+        ImGui.SameLine();
+        ImGui.Text("Speed:");
+        ImGui.SameLine();
+        
+        float fps = animationSystem.PlaybackSpeed;
+        if (ImGui.Button("0.5x##speed05", new Vector2(40f, buttonHeight))) animationSystem.SetPlaybackSpeed(6f);
+        ImGui.SameLine();
+        if (ImGui.Button("1x##speed1", new Vector2(35f, buttonHeight))) animationSystem.SetPlaybackSpeed(12f);
+        ImGui.SameLine();
+        if (ImGui.Button("2x##speed2", new Vector2(35f, buttonHeight))) animationSystem.SetPlaybackSpeed(24f);
+        ImGui.SameLine();
+        
+        ImGui.SetNextItemWidth(100f);
+        if (ImGui.SliderFloat("##FPS", ref fps, 1f, 60f, "%.0f fps"))
+        {
+            animationSystem.SetPlaybackSpeed(fps);
+        }
+        ImGui.SameLine();
+        
+        // Onion skinning toggle
+        ImGui.Dummy(new Vector2(spacing, 0));
+        ImGui.SameLine();
+        if (ImGui.Checkbox("Onion Skin##toolbar", ref showOnionSkin))
+        {
+            // Toggle handled automatically
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Show previous (blue) and next (red) frames");
+        }
+        ImGui.SameLine();
+        
+        if (showOnionSkin)
+        {
+            ImGui.SetNextItemWidth(80f);
+            ImGui.SliderFloat("##OnionOpacity", ref onionSkinOpacity, 0.1f, 0.5f, "%.1f");
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("Onion skin opacity");
+            }
+        }
+        
+        ImGui.End();
+    }
+    
     static void DrawImGui()
     {
+        // Animation Controls Window
+        ImGui.Begin("Animation Controls");
+        
+        ImGui.Text($"Frame {animationSystem.CurrentFrameIndex + 1} of {animationSystem.FrameCount}");
+        
+        // Frame navigation
+        if (ImGui.Button("<<")) { SaveCurrentFrame(); animationSystem.PreviousFrame(); LoadCurrentFrame(); }
+        ImGui.SameLine();
+        if (animationSystem.IsPlaying)
+        {
+            if (ImGui.Button("Pause")) animationSystem.Pause();
+        }
+        else
+        {
+            if (ImGui.Button("Play")) animationSystem.Play();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button(">>")) { SaveCurrentFrame(); animationSystem.NextFrame(); LoadCurrentFrame(); }
+        
+        // Frame timeline
+        int currentFrame = animationSystem.CurrentFrameIndex;
+        if (ImGui.SliderInt("Timeline", ref currentFrame, 0, animationSystem.FrameCount - 1))
+        {
+            SaveCurrentFrame();
+            animationSystem.GoToFrame(currentFrame);
+            LoadCurrentFrame();
+        }
+        
+        // Playback settings
+        ImGui.Separator();
+        ImGui.Text("Playback Settings");
+        
+        float fps = animationSystem.PlaybackSpeed;
+        if (ImGui.Button("0.5x")) animationSystem.SetPlaybackSpeed(6f);
+        ImGui.SameLine();
+        if (ImGui.Button("1x")) animationSystem.SetPlaybackSpeed(12f);
+        ImGui.SameLine();
+        if (ImGui.Button("2x")) animationSystem.SetPlaybackSpeed(24f);
+        ImGui.SameLine();
+        if (ImGui.Button("4x")) animationSystem.SetPlaybackSpeed(48f);
+        
+        if (ImGui.SliderFloat("FPS", ref fps, 1f, 60f))
+        {
+            animationSystem.SetPlaybackSpeed(fps);
+        }
+        
+        bool loop = animationSystem.Loop;
+        if (ImGui.Checkbox("Loop", ref loop))
+        {
+            animationSystem.SetLooping(loop);
+        }
+        
+        ImGui.Separator();
+        ImGui.Text("Frame Operations");
+        
+        if (ImGui.Button("Add Frame"))
+        {
+            SaveCurrentFrame();
+            animationSystem.AddNewFrame();
+            animationSystem.GoToFrame(animationSystem.FrameCount - 1);
+            ClearCanvas();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Duplicate"))
+        {
+            SaveCurrentFrame();
+            animationSystem.DuplicateCurrentFrame();
+        }
+        
+        if (ImGui.Button("Insert Before"))
+        {
+            SaveCurrentFrame();
+            animationSystem.InsertFrame(animationSystem.CurrentFrameIndex);
+            LoadCurrentFrame();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Delete Frame") && animationSystem.FrameCount > 1)
+        {
+            animationSystem.DeleteFrame(animationSystem.CurrentFrameIndex);
+            LoadCurrentFrame();
+        }
+        
+        if (ImGui.Button("Clear Frame"))
+        {
+            animationSystem.ClearCurrentFrame();
+            ClearCanvas();
+        }
+        
+        ImGui.Separator();
+        ImGui.Text("Drawing Options");
+        ImGui.Checkbox("Auto-save Frame", ref autoSaveFrame);
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Automatically saves your drawing to the current frame as you draw.\nDisable to draw without saving (useful for testing).");
+        }
+        ImGui.Checkbox("Show Onion Skin", ref showOnionSkin);
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Shows previous frame (blue) and next frame (red) as ghosts.\nHelps with animation flow.");
+        }
+        if (showOnionSkin)
+        {
+            ImGui.SliderFloat("Onion Opacity", ref onionSkinOpacity, 0.1f, 0.5f);
+        }
+        
+        ImGui.End();
+        
+        // Original Particle Settings Window
         ImGui.Begin("Particle Settings");
         
         ImGui.Text("Presets");
@@ -573,5 +988,82 @@ class Program
         // Draw as two triangles
         Raylib.DrawTriangle(p1, p2, p3, startColor);
         Raylib.DrawTriangle(p1, p3, p4, endColor);
+    }
+    
+    static void LoadCurrentFrame()
+    {
+        if (animationSystem.CurrentFrame == null) return;
+        
+        var (loadedTrails, loadedParticles) = animationSystem.LoadFrameData(animationSystem.CurrentFrame);
+        sparklerSegments = loadedTrails;
+        particles = loadedParticles;
+    }
+    
+    static void SaveCurrentFrame()
+    {
+        animationSystem.SaveCurrentState(sparklerSegments, particles);
+    }
+    
+    static void ClearCanvas()
+    {
+        particles.Clear();
+        sparklerSegments.Clear();
+        currentSegment = null;
+    }
+    
+    static void DrawOnionSkin()
+    {
+        // Draw previous frame
+        if (animationSystem.CurrentFrameIndex > 0)
+        {
+            var prevFrame = animationSystem.Frames[animationSystem.CurrentFrameIndex - 1];
+            DrawFrameWithOpacity(prevFrame, onionSkinOpacity * 0.5f, new Color(100, 100, 255, 255));
+        }
+        
+        // Draw next frame
+        if (animationSystem.CurrentFrameIndex < animationSystem.FrameCount - 1)
+        {
+            var nextFrame = animationSystem.Frames[animationSystem.CurrentFrameIndex + 1];
+            DrawFrameWithOpacity(nextFrame, onionSkinOpacity * 0.5f, new Color(255, 100, 100, 255));
+        }
+    }
+    
+    static void DrawFrameWithOpacity(Frame frame, float opacity, Color tint)
+    {
+        // Draw trails with opacity
+        foreach (var segment in frame.TrailSegments)
+        {
+            if (segment.Points.Count > 1)
+            {
+                for (int i = 1; i < segment.Points.Count; i++)
+                {
+                    var point1 = segment.Points[i - 1];
+                    var point2 = segment.Points[i];
+                    
+                    // Draw thicker lines for better visibility
+                    Color lineColor = new Color(
+                        (byte)(tint.R),
+                        (byte)(tint.G),
+                        (byte)(tint.B),
+                        (byte)(255 * opacity)
+                    );
+                    
+                    Raylib.DrawLineEx(point1.Position, point2.Position, 4f, lineColor);
+                }
+            }
+        }
+        
+        // Draw particles with opacity
+        foreach (var snapshot in frame.ParticleSnapshots)
+        {
+            Color particleColor = new Color(
+                (byte)(tint.R),
+                (byte)(tint.G),
+                (byte)(tint.B),
+                (byte)(255 * opacity * 0.7f)
+            );
+            
+            ParticleShapes.DrawParticle(snapshot.Position, snapshot.Size * 0.8f, particleColor, snapshot.Shape);
+        }
     }
 }
